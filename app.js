@@ -1,38 +1,35 @@
 /* =============================================
-   Form Order FNI — app.js
-   Fitur: Real-time order masuk ke admin,
+   Form Order FNI — app.js (CONNECTED TO SUPABASE)
+   Fitur: Real-time database via Supabase SDK
           Manajemen multi-admin, Super Admin
    ============================================= */
 
-/* ===== DEFAULT ADMIN LIST ===== */
-const DEFAULT_ADMINS = [
-  { username: 'admin', password: 'admin123', role: 'super', createdAt: '2025-01-01' }
-];
+// Konfigurasi Database Supabase Anda
+const SUPABASE_URL = 'https://uqdpliitoktvkuybghyz.supabase.co'; // Diperbaiki ke format URL yang benar
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVxZHBsaWlpdG9rdmt1eWJnaHl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1OTQ4MzgsImV4cCI6MjA5NzE3MDgzOH0.mguFUa3gH_Qfjm4i1mVt4MoLBaGaOfB74CP3JUhf-gA';
+
+const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /* ===== STATE ===== */
 let isAdmin      = false;
 let currentAdmin = null;
-let orders       = load('fni_orders', []);
-let admins       = load('fni_admins', DEFAULT_ADMINS);
-let lastCount    = orders.length; // untuk deteksi order baru
-
-/* ===== LOCAL STORAGE HELPERS ===== */
-function load(key, def) {
-  try { return JSON.parse(localStorage.getItem(key)) || def; }
-  catch { return def; }
-}
-function save(key, data) {
-  localStorage.setItem(key, JSON.stringify(data));
-}
-function saveOrders() { save('fni_orders', orders); }
-function saveAdmins()  { save('fni_admins', admins); }
+let orders       = []; // Diambil dari Supabase
+let admins       = []; // Diambil dari Supabase
+let lastCount    = 0;
 
 /* ===== INIT ===== */
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   setToday();
+  
+  // Ambil data pertama kali dari database cloud
+  await fetchOrdersFromSupabase();
+  await fetchAdminsFromSupabase();
+  
   renderTable();
   updateStats();
-  startPolling();
+  
+  // Aktifkan fitur Real-time (mendengarkan perubahan data langsung dari cloud)
+  setupRealtimeSubscription();
 });
 
 function setToday() {
@@ -43,68 +40,80 @@ function setToday() {
   });
 }
 
-/* ===== REAL-TIME POLLING =====
-   Cek localStorage setiap 2 detik.
-   Kalau ada order baru, update tampilan admin + tampilkan alert.
-   Juga mendengarkan event 'storage' (lintas tab di browser yang sama).
-*/
-function startPolling() {
-  // Lintas-tab: event storage hanya menyala di tab LAIN
-  window.addEventListener('storage', e => {
-    if (e.key === 'fni_orders') {
-      const fresh = JSON.parse(e.newValue || '[]');
-      handleFreshOrders(fresh);
-    }
-    if (e.key === 'fni_admins') {
-      admins = JSON.parse(e.newValue || '[]');
-      if (isAdmin) renderAdminList();
-    }
-  });
+/* ===== DATABASE FETCHERS (AMBIL DATA CLOUD) ===== */
+async function fetchOrdersFromSupabase() {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*')
+    .order('created_at', { ascending: false }); // Urutkan dari yang terbaru
 
-  // Polling untuk tab yang sama (submit dari tab lain dalam frame yang sama)
-  setInterval(() => {
-    const fresh = load('fni_orders', []);
-    if (fresh.length !== orders.length || JSON.stringify(fresh[0]) !== JSON.stringify(orders[0])) {
-      handleFreshOrders(fresh);
-    }
-  }, 2000);
+  if (error) {
+    console.error('Gagal mengambil data order:', error.message);
+    return;
+  }
+  orders = data || [];
 }
 
-function handleFreshOrders(fresh) {
-  const prevLen = orders.length;
-  orders = fresh;
-  updateStats();
-  renderTable();
+async function fetchAdminsFromSupabase() {
+  const { data, error } = await supabase
+    .from('admins')
+    .select('*');
 
-  if (isAdmin) {
-    renderAdminTable();
-    updateAdminStats();
-
-    const newCount = fresh.length - prevLen;
-    if (newCount > 0) {
-      // Notif dot di tab
-      document.getElementById('notifDot').classList.remove('hidden');
-
-      // Alert banner di dashboard
-      const newest = fresh[0];
-      document.getElementById('alertMsg').textContent =
-        `🔔 Order baru masuk! ${newest.nama} (${newest.unit}) — ${newest.type === 'desain' ? 'Desain' : 'Video'} · ${fmtTime(newest.createdAt)}`;
-      document.getElementById('newOrderAlert').classList.remove('hidden');
-
-      // Toast
-      showToast(`🔔 Order baru dari ${newest.nama} masuk!`);
-
-      // Highlight baris baru
-      setTimeout(() => {
-        const rows = document.querySelectorAll('#adminBody tr');
-        for (let i = 0; i < Math.min(newCount, rows.length); i++) {
-          rows[i].classList.add('row-new');
-          setTimeout(() => rows[i].classList.remove('row-new'), 6000);
-        }
-      }, 100);
-    }
+  if (error) {
+    console.error('Gagal mengambil data admin:', error.message);
+    return;
   }
-  lastCount = fresh.length;
+  admins = data || [];
+}
+
+/* ===== SUPABASE REAL-TIME (SINKRONISASI OTOMATIS DAN INSTAN) ===== */
+function setupRealtimeSubscription() {
+  // Dengarkan perubahan pada tabel 'orders'
+  supabase
+    .channel('public:orders')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, async (payload) => {
+      const prevLen = orders.length;
+      
+      // Ambil data terbaru dari cloud agar state tersinkronisasi
+      await fetchOrdersFromSupabase();
+      updateStats();
+      renderTable();
+
+      if (isAdmin) {
+        renderAdminTable();
+        updateAdminStats();
+
+        // Jika ada baris data baru ditambahkan ke database (INSERT)
+        if (payload.eventType === 'INSERT') {
+          document.getElementById('notifDot').classList.remove('hidden');
+          const newest = payload.new;
+          
+          document.getElementById('alertMsg').textContent =
+            `🔔 Order baru masuk! ${newest.nama} (${newest.unit}) — ${newest.type === 'desain' ? 'Desain' : 'Video'}`;
+          document.getElementById('newOrderAlert').classList.remove('hidden');
+
+          showToast(`🔔 Order baru dari ${newest.nama} masuk!`);
+
+          setTimeout(() => {
+            const rows = document.querySelectorAll('#adminBody tr');
+            if (rows[0]) {
+              rows[0].classList.add('row-new');
+              setTimeout(() => rows[0].classList.remove('row-new'), 6000);
+            }
+          }, 100);
+        }
+      }
+    })
+    .subscribe();
+
+  // Dengarkan perubahan pada tabel 'admins'
+  supabase
+    .channel('public:admins')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'admins' }, async () => {
+      await fetchAdminsFromSupabase();
+      if (isAdmin) renderAdminList();
+    })
+    .subscribe();
 }
 
 function dismissAlert() {
@@ -112,8 +121,8 @@ function dismissAlert() {
   document.getElementById('notifDot').classList.add('hidden');
 }
 
-/* ===== SUBMIT ORDER ===== */
-function submitOrder(type) {
+/* ===== SUBMIT ORDER (SIMPAN KE CLOUD) ===== */
+async function submitOrder(type) {
   const p = type === 'desain' ? 'd_' : 'v_';
   const nama      = val(p+'nama');
   const unit      = val(p+'unit');
@@ -128,33 +137,27 @@ function submitOrder(type) {
     showToast('⚠️ Deadline tidak boleh sebelum tanggal pengajuan!'); return;
   }
 
-  const order = {
-    id: Date.now(), type, nama, unit, pengajuan, tgl, deadline,
-    status: 'Pending',
-    createdAt: new Date().toISOString()
-  };
+  // Mengirim objek langsung ke tabel 'orders' di Supabase
+  const { data, error } = await supabase
+    .from('orders')
+    .insert([
+      { 
+        type, 
+        nama, 
+        unit, 
+        pengajuan, 
+        tgl, 
+        deadline,
+        status: 'Pending'
+      }
+    ]);
 
-  orders.unshift(order);
-  saveOrders(); // ini akan memicu storage event di tab admin lain
+  if (error) {
+    showToast('❌ Gagal mengirim order: ' + error.message);
+    return;
+  }
 
   clearForm(p);
-  updateStats();
-  renderTable();
-
-  // Kalau admin sedang buka di tab yang sama
-  if (isAdmin) {
-    renderAdminTable();
-    updateAdminStats();
-    const el = document.getElementById('notifDot');
-    if (el) el.classList.remove('hidden');
-    document.getElementById('alertMsg').textContent =
-      `🔔 Order baru masuk! ${nama} (${unit}) — ${type === 'desain' ? 'Desain' : 'Video'} · barusan`;
-    document.getElementById('newOrderAlert').classList.remove('hidden');
-    setTimeout(() => {
-      const rows = document.querySelectorAll('#adminBody tr');
-      if (rows[0]) { rows[0].classList.add('row-new'); setTimeout(() => rows[0].classList.remove('row-new'), 6000); }
-    }, 100);
-  }
 
   document.getElementById('successMsg').textContent =
     `Order ${type} dari ${nama} (${unit}) berhasil diajukan! Admin akan segera memprosesnya.`;
@@ -189,12 +192,12 @@ function renderTable() {
   tbody.innerHTML = '';
 
   if (!filtered.length) {
-    empty.classList.remove('hidden');
+    if(empty) empty.classList.remove('hidden');
     tbody.closest('table').style.display = 'none';
     return;
   }
 
-  empty.classList.add('hidden');
+  if(empty) empty.classList.add('hidden');
   tbody.closest('table').style.display = '';
 
   filtered.forEach((o, i) => {
@@ -222,13 +225,13 @@ function renderAdminTable() {
   tbody.innerHTML = '';
 
   if (!orders.length) {
-    empty.classList.remove('hidden');
+    if(empty) empty.classList.remove('hidden');
     tbody.closest('table').style.display = 'none';
     updateAdminStats();
     return;
   }
 
-  empty.classList.add('hidden');
+  if(empty) empty.classList.add('hidden');
   tbody.closest('table').style.display = '';
 
   orders.forEach((o, i) => {
@@ -242,7 +245,7 @@ function renderAdminTable() {
       <td class="pengajuan-cell" title="${esc(o.pengajuan)}">${esc(o.pengajuan)}</td>
       <td>${fmtDate(o.tgl)}</td>
       <td>${fmtDate(o.deadline)}</td>
-      <td><span class="time-badge">${fmtTime(o.createdAt)}</span></td>
+      <td><span class="time-badge">${fmtTime(o.created_at)}</span></td>
       <td>${statusBadge(o.status)}</td>
       <td>
         <div style="display:flex;gap:6px;align-items:center">
@@ -279,7 +282,7 @@ function renderAdminList() {
       <td>${isSuper
         ? '<span class="role-badge role-super">⭐ Super Admin</span>'
         : '<span class="role-badge role-admin">Admin</span>'}</td>
-      <td style="font-size:12px;color:var(--gray-4)">${a.createdAt || '-'}</td>
+      <td style="font-size:12px;color:var(--gray-4)">${a.created_at ? fmtDate(a.created_at.split('T')[0]) : '-'}</td>
       <td>
         <div style="display:flex;gap:6px">
           <button class="btn-action" onclick="openChangePass('${esc(a.username)}')">Ganti Password</button>
@@ -293,26 +296,33 @@ function renderAdminList() {
   });
 }
 
-/* ===== UPDATE STATUS ===== */
-function updateStatus(id, newStatus) {
-  const o = orders.find(x => x.id === id);
-  if (!o) return;
-  o.status = newStatus;
-  saveOrders();
-  renderTable();
-  renderAdminTable();
-  updateStats();
+/* ===== UPDATE STATUS IN CLOUD ===== */
+async function updateStatus(id, newStatus) {
+  const { error } = await supabase
+    .from('orders')
+    .update({ status: newStatus })
+    .eq('id', id);
+
+  if (error) {
+    showToast(`❌ Gagal memperbarui status: ${error.message}`);
+    return;
+  }
   showToast(`✅ Status diperbarui: ${newStatus}`);
 }
 
-/* ===== DELETE ORDER ===== */
-function deleteOrder(id) {
+/* ===== DELETE ORDER FROM CLOUD ===== */
+async function deleteOrder(id) {
   if (!confirm('Hapus order ini? Tindakan tidak bisa dibatalkan.')) return;
-  orders = orders.filter(x => x.id !== id);
-  saveOrders();
-  renderTable();
-  renderAdminTable();
-  updateStats();
+  
+  const { error } = await supabase
+    .from('orders')
+    .delete()
+    .eq('id', id);
+
+  if (error) {
+    showToast(`❌ Gagal menghapus: ${error.message}`);
+    return;
+  }
   showToast('🗑️ Order berhasil dihapus');
 }
 
@@ -353,6 +363,8 @@ function showAdminLogin() {
 function doLogin() {
   const u = document.getElementById('loginUser').value.trim();
   const p = document.getElementById('loginPass').value;
+  
+  // Mencocokkan akun langsung dari data tabel 'admins' Supabase
   const match = admins.find(a => a.username === u && a.password === p);
 
   if (match) {
@@ -381,8 +393,8 @@ function adminLogout() {
   showToast('👋 Logout berhasil');
 }
 
-/* ===== TAMBAH ADMIN ===== */
-function addAdmin() {
+/* ===== TAMBAH ADMIN KE CLOUD ===== */
+async function addAdmin() {
   const u  = document.getElementById('newAdminUser').value.trim();
   const p  = document.getElementById('newAdminPass').value;
   const p2 = document.getElementById('newAdminPass2').value;
@@ -395,34 +407,41 @@ function addAdmin() {
   if (p !== p2)         { showErr(errEl, 'Konfirmasi password tidak cocok!'); return; }
   if (admins.find(a => a.username === u)) { showErr(errEl, 'Username sudah digunakan!'); return; }
 
-  admins.push({
-    username: u, password: p, role: 'admin',
-    createdAt: new Date().toISOString().split('T')[0]
-  });
-  saveAdmins();
+  const { error } = await supabase
+    .from('admins')
+    .insert([{ username: u, password: p, role: 'admin' }]);
 
-  // Clear form
+  if (error) {
+    showErr(errEl, 'Gagal menambahkan admin: ' + error.message);
+    return;
+  }
+
   ['newAdminUser','newAdminPass','newAdminPass2'].forEach(id => document.getElementById(id).value = '');
   closeModal('addAdminModal');
-  renderAdminList();
   showToast(`✅ Admin "${u}" berhasil ditambahkan!`);
 }
 
-/* ===== HAPUS ADMIN ===== */
-function removeAdmin(username) {
+/* ===== HAPUS ADMIN DARI CLOUD ===== */
+async function removeAdmin(username) {
   const target = admins.find(a => a.username === username);
   if (!target || target.role === 'super') {
     showToast('⛔ Super Admin tidak bisa dihapus!'); return;
   }
   if (!confirm(`Hapus admin "${username}"? Admin ini tidak bisa login lagi.`)) return;
 
-  admins = admins.filter(a => a.username !== username);
-  saveAdmins();
-  renderAdminList();
+  const { error } = await supabase
+    .from('admins')
+    .delete()
+    .eq('username', username);
+
+  if (error) {
+    showToast(`❌ Gagal menghapus admin: ${error.message}`);
+    return;
+  }
   showToast(`🗑️ Admin "${username}" berhasil dihapus`);
 }
 
-/* ===== GANTI PASSWORD ===== */
+/* ===== GANTI PASSWORD DI CLOUD ===== */
 function openChangePass(username) {
   document.getElementById('changePassTarget').textContent = username;
   document.getElementById('changePassUsername').value     = username;
@@ -432,7 +451,7 @@ function openChangePass(username) {
   showModal('changePassModal');
 }
 
-function doChangePass() {
+async function doChangePass() {
   const username = document.getElementById('changePassUsername').value;
   const p        = document.getElementById('changePassNew').value;
   const p2       = document.getElementById('changePassNew2').value;
@@ -444,13 +463,16 @@ function doChangePass() {
   if (p.length < 6) { showErr(errEl, 'Password minimal 6 karakter!'); return; }
   if (p !== p2)     { showErr(errEl, 'Konfirmasi password tidak cocok!'); return; }
 
-  const a = admins.find(x => x.username === username);
-  if (!a) { showErr(errEl, 'Admin tidak ditemukan!'); return; }
+  const { error } = await supabase
+    .from('admins')
+    .update({ password: p })
+    .eq('username', username);
 
-  a.password = p;
-  saveAdmins();
+  if (error) {
+    showErr(errEl, 'Gagal memperbarui password: ' + error.message);
+    return;
+  }
 
-  // Jika mengubah password diri sendiri, update currentAdmin
   if (currentAdmin?.username === username) currentAdmin.password = p;
 
   closeModal('changePassModal');
@@ -474,6 +496,7 @@ document.addEventListener('click', e => {
 let toastTimer;
 function showToast(msg) {
   const t = document.getElementById('toast');
+  if(!t) return;
   t.textContent = msg;
   t.classList.remove('hidden');
   clearTimeout(toastTimer);
@@ -489,7 +512,9 @@ function esc(str) {
 
 function fmtDate(d) {
   if (!d) return '-';
-  const [y,m,day] = d.split('-');
+  const parts = d.split('-');
+  if(parts.length < 3) return d;
+  const [y,m,day] = parts;
   const months = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
   return `${parseInt(day)} ${months[parseInt(m)-1]} ${y}`;
 }
