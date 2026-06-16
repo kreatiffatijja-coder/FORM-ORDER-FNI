@@ -1,252 +1,89 @@
-/* =============================================
-   Form Order FNI — style.css
-   Palette: Putih · Tosca #2ABCAA · Kuning #F5C518
-   ============================================= */
+const SUPABASE_URL = 'https://uqdpliitoktvkuybghyz.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVxZHBsaWlpdG9rdmt1eWJnaHl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1OTQ4MzgsImV4cCI6MjA5NzE3MDgzOH0.mguFUa3gH_Qfjm4i1mVt4MoLBaGaOfB74CP3JUhf-gA';
+const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+let orders = [], admins = [], isAdmin = false, currentAdmin = null;
 
-:root {
-  --teal:       #2ABCAA;
-  --teal-dark:  #1E9B8B;
-  --teal-light: #E8F9F7;
-  --teal-mid:   #B2E8E3;
-  --yellow:     #F5C518;
-  --yellow-dark:#D4A800;
-  --yellow-light:#FFF8D6;
-  --dark:       #1A1A2E;
-  --gray-1:     #F5F6FA;
-  --gray-2:     #E8ECF2;
-  --gray-3:     #CBD0DA;
-  --gray-4:     #8C96A6;
-  --white:      #FFFFFF;
-  --radius-sm:  6px;
-  --radius-md:  12px;
-  --radius-lg:  20px;
-  --shadow-sm:  0 1px 4px rgba(26,26,46,0.06);
-  --shadow-md:  0 4px 20px rgba(26,26,46,0.10);
-  --shadow-lg:  0 10px 40px rgba(26,26,46,0.14);
-  --font:       'Inter', sans-serif;
+document.addEventListener('DOMContentLoaded', async () => {
+    await refreshData();
+    renderTable();
+    updateStats();
+    setupRealtime();
+});
+
+async function refreshData() {
+    const { data: o } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+    const { data: a } = await supabase.from('admins').select('*');
+    orders = o || []; admins = a || [];
 }
 
-html { scroll-behavior: smooth; }
-
-body {
-  font-family: var(--font);
-  background: var(--gray-1);
-  color: var(--dark);
-  min-height: 100vh;
-  line-height: 1.6;
+function setupRealtime() {
+    supabase.channel('public:orders').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, async () => {
+        await refreshData();
+        renderTable(); updateStats();
+        if(isAdmin) renderAdminTable();
+    }).subscribe();
 }
 
-/* ===== NAVBAR ===== */
-.navbar {
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  background: var(--white);
-  border-bottom: 1.5px solid var(--gray-2);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 32px;
-  height: 64px;
-  box-shadow: var(--shadow-sm);
+async function submitOrder(type) {
+    const p = type === 'desain' ? 'd_' : 'v_';
+    const payload = {
+        type,
+        nama: document.getElementById(p+'nama').value,
+        unit: document.getElementById(p+'unit').value,
+        pengajuan: document.getElementById(p+'pengajuan').value,
+        tgl: document.getElementById(p+'tgl').value,
+        deadline: document.getElementById(p+'deadline').value,
+        status: 'Pending'
+    };
+    const { error } = await supabase.from('orders').insert([payload]);
+    if (error) alert(error.message);
+    else { document.getElementById('successMsg').innerText = "Order Berhasil!"; showModal('successModal'); }
 }
 
-.nav-brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+function renderTable() {
+    const body = document.getElementById('statusBody');
+    body.innerHTML = orders.map((o, i) => `
+        <tr><td>${i+1}</td><td>${o.type}</td><td>${o.nama}</td><td>${o.unit}</td><td>${o.tgl}</td><td>${o.deadline}</td>
+        <td><span class="badge ${o.status === 'Done' ? 'badge-done' : 'badge-pending'}">${o.status}</span></td></tr>
+    `).join('');
 }
 
-.brand-icon {
-  width: 40px; height: 40px;
-  background: linear-gradient(135deg, var(--teal), var(--teal-dark));
-  border-radius: var(--radius-sm);
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 800; font-size: 13px; color: var(--white);
-  letter-spacing: 0.5px;
+function updateStats() {
+    document.getElementById('statTotal').innerText = orders.length;
+    document.getElementById('statPending').innerText = orders.filter(o => o.status === 'Pending').length;
+    document.getElementById('statDone').innerText = orders.filter(o => o.status === 'Done').length;
 }
 
-.brand-title {
-  font-size: 16px; font-weight: 700; color: var(--dark);
-  display: block; line-height: 1.2;
+// Tambahkan sisa fungsi login, switchTab, dan renderAdminTable sesuai kebutuhan Anda.
+function switchTab(tab) {
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-'+tab).classList.add('active');
+    document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
 }
 
-.brand-sub {
-  font-size: 11px; color: var(--gray-4); font-weight: 400;
-  display: block;
+function showModal(id) { document.getElementById(id).classList.remove('hidden'); }
+function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+function showAdminLogin() { showModal('loginModal'); }
+function doLogin() {
+    const u = document.getElementById('loginUser').value;
+    const p = document.getElementById('loginPass').value;
+    const match = admins.find(a => a.username === u && a.password === p);
+    if(match) {
+        isAdmin = true; currentAdmin = match;
+        document.querySelectorAll('.admin-only').forEach(e => e.classList.remove('hidden'));
+        document.getElementById('btnAdminLogin').classList.add('hidden');
+        document.getElementById('adminBadge').classList.remove('hidden');
+        closeModal('loginModal'); switchTab('admin'); renderAdminTable();
+    } else alert("Login Salah!");
 }
 
-.nav-actions { display: flex; align-items: center; gap: 12px; }
-
-.btn-nav {
-  display: flex; align-items: center; gap: 6px;
-  background: var(--teal-light);
-  color: var(--teal-dark);
-  border: 1.5px solid var(--teal-mid);
-  border-radius: var(--radius-sm);
-  padding: 7px 14px;
-  font-size: 13px; font-weight: 600;
-  cursor: pointer;
-  transition: all .2s;
+function renderAdminTable() {
+    const body = document.getElementById('adminBody');
+    body.innerHTML = orders.map((o, i) => `
+        <tr><td>${i+1}</td><td>${o.type}</td><td>${o.nama}</td><td>${o.unit}</td><td>${o.deadline}</td><td>${o.status}</td>
+        <td><button onclick="deleteOrder(${o.id})">Hapus</button></td></tr>
+    `).join('');
 }
-.btn-nav:hover { background: var(--teal); color: var(--white); border-color: var(--teal); }
-
-.admin-badge {
-  display: flex; align-items: center; gap: 8px;
-  background: var(--teal-light);
-  border: 1.5px solid var(--teal-mid);
-  border-radius: 20px;
-  padding: 5px 14px;
-  font-size: 13px; font-weight: 600; color: var(--teal-dark);
-}
-
-.dot-green {
-  width: 8px; height: 8px;
-  background: #22C55E;
-  border-radius: 50%;
-  display: inline-block;
-  animation: pulse 2s infinite;
-}
-@keyframes pulse {
-  0%,100%{opacity:1;transform:scale(1)}
-  50%{opacity:.6;transform:scale(1.3)}
-}
-
-.btn-logout {
-  background: none; border: none;
-  color: var(--teal-dark);
-  font-size: 12px; cursor: pointer;
-  padding: 2px 8px;
-  border-left: 1px solid var(--teal-mid);
-  margin-left: 4px;
-  font-weight: 500;
-  transition: color .2s;
-}
-.btn-logout:hover { color: #E53E3E; }
-
-/* ===== HERO ===== */
-.hero {
-  background: linear-gradient(135deg, var(--dark) 0%, #16213E 60%, #0F3460 100%);
-  padding: 56px 32px 52px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 32px;
-  overflow: hidden;
-  position: relative;
-}
-
-.hero::before {
-  content: '';
-  position: absolute;
-  top: -60px; right: 20%;
-  width: 280px; height: 280px;
-  background: radial-gradient(circle, rgba(42,188,170,.18) 0%, transparent 70%);
-  border-radius: 50%;
-  pointer-events: none;
-}
-
-.hero-content { max-width: 560px; }
-
-.hero-tag {
-  display: inline-block;
-  background: rgba(42,188,170,.15);
-  border: 1px solid rgba(42,188,170,.35);
-  color: var(--teal);
-  font-size: 12px; font-weight: 600;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  padding: 4px 12px;
-  border-radius: 20px;
-  margin-bottom: 16px;
-}
-
-.hero-title {
-  font-size: clamp(28px, 5vw, 46px);
-  font-weight: 800;
-  color: var(--white);
-  line-height: 1.15;
-  margin-bottom: 12px;
-}
-
-.accent-yellow { color: var(--yellow); }
-
-.hero-desc {
-  font-size: 15px;
-  color: rgba(255,255,255,.65);
-  line-height: 1.7;
-  margin-bottom: 28px;
-}
-
-.hero-stats {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-}
-
-.stat { text-align: center; }
-
-.stat-num {
-  display: block;
-  font-size: 26px; font-weight: 800;
-  color: var(--yellow);
-  line-height: 1;
-}
-
-.stat-lbl {
-  font-size: 11px;
-  color: rgba(255,255,255,.5);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.stat-divider {
-  width: 1px; height: 36px;
-  background: rgba(255,255,255,.15);
-}
-
-.hero-illustration {
-  width: 200px;
-  flex-shrink: 0;
-  opacity: .85;
-}
-
-/* ===== MAIN ===== */
-.main-content {
-  max-width: 1200px;
-  margin: 32px auto;
-  padding: 0 24px;
-}
-
-/* ===== TABS ===== */
-.tab-bar {
-  display: flex;
-  gap: 4px;
-  background: var(--white);
-  border: 1.5px solid var(--gray-2);
-  border-radius: var(--radius-md);
-  padding: 6px;
-  margin-bottom: 28px;
-  box-shadow: var(--shadow-sm);
-}
-
-.tab-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 10px 16px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--gray-4);
-  font-size: 13px; font-weight: 600;
-  cursor: pointer;
-  transition: all .2s;
-}
-
-.tab-btn:hover { background: var(--teal-light); color: var(--teal-dark
